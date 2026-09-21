@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Signal Atlas is a location-aware awareness news map for incident discovery and source review."
+    />
+    <title>Signal Atlas — Location awareness</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to incidents</a>
+
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Signal Atlas home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>Signal Atlas</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary navigation">
+        <a class="active" href="#main-content">Explore</a>
+        <a href="#how-it-works">How it works</a>
+        <a href="#source-policy">Source policy</a>
+      </nav>
+      <button class="icon-button" id="themeToggle" type="button" aria-label="Switch color theme">
+        <span aria-hidden="true">◐</span>
+      </button>
+    </header>
+
+    <main id="main-content">
+      <section class="intro" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow"><span></span> Location intelligence, made readable</p>
+          <h1 id="page-title">What happened<br /><em>near you?</em></h1>
+          <p class="intro-copy">Search a place to bring together reported incidents, official alerts, and the original reporting behind each signal.</p>
+        </div>
+        <p class="prototype-note"><strong>Prototype view</strong><br />Illustrative incidents are shown until you connect live source providers.</p>
+      </section>
+
+      <section class="search-panel" aria-label="Incident search">
+        <div class="search-input-wrap">
+          <label class="sr-only" for="placeSearch">Location</label>
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
+          <input id="placeSearch" autocomplete="off" value="Bengaluru, India" placeholder="Search city, neighbourhood, or address" />
+          <button class="clear-search" id="clearSearch" type="button" aria-label="Clear search">×</button>
+        </div>
+        <div class="search-divider"></div>
+        <div class="date-control">
+          <span class="date-icon" aria-hidden="true">◷</span>
+          <label for="timeRange">Time range</label>
+          <select id="timeRange">
+            <option value="24">Last 24 hours</option>
+            <option value="72" selected>Last 72 hours</option>
+            <option value="168">Last 7 days</option>
+          </select>
+        </div>
+        <button class="search-button" id="runSearch" type="button">Analyze location <span aria-hidden="true">↗</span></button>
+      </section>
+
+      <div class="quick-searches" aria-label="Suggested locations">
+        <span>Try:</span>
+        <button type="button" data-place="Mumbai, India">Mumbai</button>
+        <button type="button" data-place="New Delhi, India">New Delhi</button>
+        <button type="button" data-place="London, United Kingdom">London</button>
+        <button type="button" data-place="Bengaluru, India">Bengaluru</button>
+      </div>
+
+      <section class="workspace" aria-label="Incident map and results">
+        <div class="map-column">
+          <div class="map-toolbar">
+            <div class="area-label"><span class="pulse-dot" aria-hidden="true"></span><span id="mapArea">Bengaluru, India</span></div>
+            <div class="map-legend" aria-label="Incident severity legend">
+              <span><b class="severity-dot urgent"></b>Urgent</span>
+              <span><b class="severity-dot watch"></b>Watch</span>
+              <span><b class="severity-dot update"></b>Update</span>
+            </div>
+          </div>
+          <div class="map-frame">
+            <div id="map" aria-label="Interactive incident map"></div>
+            <div class="map-overlay">
+              <span class="map-overlay-label">Coverage radius</span>
+              <strong id="radiusValue">12 km</strong>
+            </div>
+            <div class="map-controls" aria-label="Map controls">
+              <button type="button" id="zoomIn" aria-label="Zoom in">+</button>
+              <button type="button" id="zoomOut" aria-label="Zoom out">−</button>
+            </div>
+          </div>
+          <div class="map-status" aria-live="polite">
+            <span id="resultSummary">6 incident signals from 4 source types</span>
+            <button class="text-button" id="recenter" type="button">Recenter map <span aria-hidden="true">↗</span></button>
+          </div>
+        </div>
+
+        <aside class="feed-panel" aria-labelledby="feed-title">
+          <div class="feed-header">
+            <div>
+              <p class="eyebrow small"><span></span> Your feed</p>
+              <h2 id="feed-title">Reported nearby</h2>
+            </div>
+            <button class="filter-button" id="filterButton" type="button" aria-expanded="false" aria-controls="filterMenu">Filter <span aria-hidden="true">⌄</span></button>
+            <div class="filter-menu" id="filterMenu" hidden>
+              <label><input type="checkbox" value="urgent" checked /> Urgent</label>
+              <label><input type="checkbox" value="watch" checked /> Watch</label>
+              <label><input type="checkbox" value="update" checked /> Update</label>
+            </div>
+          </div>
+          <div class="coverage-card">
+            <div class="coverage-top"><span>Coverage health</span><span id="coveragePercent">84%</span></div>
+            <div class="coverage-track"><i id="coverageFill"></i></div>
+            <p><span class="good-dot"></span><span id="coverageCopy">4 independent source types reporting</span></p>
+          </div>
+          <div class="incident-list" id="incidentList" aria-live="polite"></div>
+          <button class="load-more" id="loadMore" type="button">Show all incidents <span id="incidentCount">6</span> <span aria-hidden="true">↓</span></button>
+        </aside>
+      </section>
+
+      <section class="how-it-works" id="how-it-works" aria-labelledby="how-title">
+        <div>
+          <p class="eyebrow small"><span></span> Signal, not noise</p>
+          <h2 id="how-title">Built for a clearer<br />view of a place.</h2>
+        </div>
+        <ol>
+          <li><span>01</span><div><h3>Search a location</h3><p>A city, neighborhood, transit stop, or landmark becomes your monitoring area.</p></div></li>
+          <li><span>02</span><div><h3>Sources are grouped</h3><p>Similar reports are clustered into a single incident, with provenance kept visible.</p></div></li>
+          <li><span>03</span><div><h3>Read the originals</h3><p>Every signal keeps its source trail so you can check context before sharing.</p></div></li>
+        </ol>
+      </section>
+    </main>
+
+    <footer id="source-policy">
+      <span>© 2026 Signal Atlas</span>
+      <p>This product should show source links, publication time, and confidence context — never replace original reporting.</p>
+      <a href="#main-content">Back to top ↑</a>
+    </footer>
+
+    <template id="incidentTemplate">
+      <article class="incident-card">
+        <button class="incident-main" type="button">
+          <span class="incident-rail"></span>
+          <span class="incident-content">
+            <span class="incident-meta"><span class="incident-category"></span><span class="incident-time"></span></span>
+            <strong class="incident-title"></strong>
+            <span class="incident-description"></span>
+            <span class="incident-location"></span>
+          </span>
+          <span class="incident-arrow" aria-hidden="true">↗</span>
+        </button>
+        <div class="source-row"></div>
+      </article>
+    </template>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
