@@ -8,11 +8,11 @@ export default async function handler(req, res) {
       });
     }
 
-    const apiKey = process.env.NEWS_API_KEY;
+    const apiKey = process.env.GNEWS_API_KEY;
 
     if (!apiKey) {
       return res.status(500).json({
-        error: "NEWS_API_KEY is not configured"
+        error: "GNEWS_API_KEY is not configured"
       });
     }
 
@@ -41,7 +41,7 @@ export default async function handler(req, res) {
 
     if (!response.ok) {
       return res.status(response.status).json({
-        error: data.message || "NewsAPI request failed"
+        error: data.message || "GNewsAPI request failed"
       });
     }
 
