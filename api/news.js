@@ -74,14 +74,11 @@ export default async function handler(req, res) {
     // 2. GET RECENT NEWS FROM NEWSAPI
     // ---------------------------------------------------------
 
-    const fromDate = new Date(
-      Date.now() - hours * 60 * 60 * 1000
-    ).toISOString();
+const fromDate = new Date(
+  Date.now() - hours * 60 * 60 * 1000
+).toISOString();
 
-// ---------------------------------------------------------
-// Build a broader local-news search
-// ---------------------------------------------------------
-
+// Get location information from the geocoder
 const address = searchedLocation.address || {};
 
 const city =
@@ -100,23 +97,27 @@ const state =
   address.state ||
   "";
 
-const searchTerms = [
+// Search several variations so smaller locations
+// have a better chance of finding news.
+const queries = [
   `"${city}"`,
   district ? `"${district}"` : "",
-  state ? `"${city} ${state}"` : ""
+  state ? `"${city}" "${state}"` : ""
 ].filter(Boolean);
 
-const newsQuery = searchTerms.join(" OR ");
+let allArticles = [];
 
-const newsUrl =
-  "https://newsapi.org/v2/everything?" +
-  new URLSearchParams({
-    q: newsQuery,
-    from: fromDate,
-    sortBy: "publishedAt",
-    language: "en",
-    pageSize: "50"
-  }).toString();
+for (const query of queries) {
+  try {
+    const newsUrl =
+      "https://newsapi.org/v2/everything?" +
+      new URLSearchParams({
+        q: query,
+        from: fromDate,
+        sortBy: "publishedAt",
+        language: "en",
+        pageSize: "50"
+      }).toString();
 
     const newsResponse = await fetch(newsUrl, {
       headers: {
@@ -128,28 +129,55 @@ const newsUrl =
     const newsData = await newsResponse.json();
 
     if (!newsResponse.ok) {
-      return res.status(newsResponse.status).json({
-        error:
-          newsData?.message ||
-          "NewsAPI request failed"
-      });
+      console.warn(
+        `NewsAPI query failed for ${query}:`,
+        newsData?.message
+      );
+      continue;
     }
 
-    const articles = Array.isArray(newsData.articles)
-      ? newsData.articles
-      : [];
+    if (Array.isArray(newsData.articles)) {
+      allArticles.push(...newsData.articles);
+    }
 
-    // Remove articles without useful information.
-    const cleanedArticles = articles
-      .filter((article) => article.title && article.url)
-      .map((article, index) => ({
-        id: `article-${index + 1}`,
-        source: article.source?.name || "Unknown source",
-        title: article.title,
-        description: article.description || "",
-        url: article.url,
-        publishedAt: article.publishedAt
-      }));
+  } catch (error) {
+    console.warn(
+      `NewsAPI query error for ${query}:`,
+      error.message
+    );
+  }
+}
+
+// Remove duplicate articles
+const uniqueArticles = Array.from(
+  new Map(
+    allArticles
+      .filter(
+        (article) =>
+          article.title &&
+          article.url
+      )
+      .map((article) => [
+        article.url,
+        article
+      ])
+  ).values()
+);
+
+// Prepare articles for Gemini
+const cleanedArticles =
+  uniqueArticles.map((article, index) => ({
+    id: `article-${index + 1}`,
+    source:
+      article.source?.name ||
+      "Unknown source",
+    title: article.title,
+    description:
+      article.description || "",
+    url: article.url,
+    publishedAt:
+      article.publishedAt
+  }));
 
     // ---------------------------------------------------------
     // 3. IF THERE IS NO NEWS
