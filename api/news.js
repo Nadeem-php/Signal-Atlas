@@ -9,12 +9,12 @@ export default async function handler(req, res) {
       });
     }
 
-    const newsApiKey = process.env.NEWS_API_KEY;
+    const newsApiKey = process.env.GNEWS_API_KEY;
     const geminiApiKey = process.env.GEMINI_API_KEY;
 
     if (!newsApiKey) {
       return res.status(500).json({
-        error: "NEWS_API_KEY is not configured"
+        error: "GNEWS_API_KEY is not configured"
       });
     }
 
