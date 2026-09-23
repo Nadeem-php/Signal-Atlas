@@ -78,15 +78,45 @@ export default async function handler(req, res) {
       Date.now() - hours * 60 * 60 * 1000
     ).toISOString();
 
-    const newsUrl =
-      "https://newsapi.org/v2/everything?" +
-      new URLSearchParams({
-        q: place,
-        from: fromDate,
-        sortBy: "publishedAt",
-        language: "en",
-        pageSize: "20"
-      }).toString();
+// ---------------------------------------------------------
+// Build a broader local-news search
+// ---------------------------------------------------------
+
+const address = searchedLocation.address || {};
+
+const city =
+  address.city ||
+  address.town ||
+  address.village ||
+  address.municipality ||
+  place;
+
+const district =
+  address.county ||
+  address.state_district ||
+  "";
+
+const state =
+  address.state ||
+  "";
+
+const searchTerms = [
+  `"${city}"`,
+  district ? `"${district}"` : "",
+  state ? `"${city} ${state}"` : ""
+].filter(Boolean);
+
+const newsQuery = searchTerms.join(" OR ");
+
+const newsUrl =
+  "https://newsapi.org/v2/everything?" +
+  new URLSearchParams({
+    q: newsQuery,
+    from: fromDate,
+    sortBy: "publishedAt",
+    language: "en",
+    pageSize: "50"
+  }).toString();
 
     const newsResponse = await fetch(newsUrl, {
       headers: {
