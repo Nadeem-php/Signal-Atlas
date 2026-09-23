@@ -9,24 +9,24 @@ export default async function handler(req, res) {
       });
     }
 
-    const newsApiKey = process.env.GNEWS_API_KEY;
-    const openaiApiKey = process.env.OPENAI_API_KEY;
+    const newsApiKey = process.env.NEWS_API_KEY;
+    const geminiApiKey = process.env.GEMINI_API_KEY;
 
     if (!newsApiKey) {
       return res.status(500).json({
-        error: "GNEWS_API_KEY is not configured"
+        error: "NEWS_API_KEY is not configured"
       });
     }
 
-    if (!openaiApiKey) {
+    if (!geminiApiKey) {
       return res.status(500).json({
-        error: "OPENAI_API_KEY is not configured"
+        error: "GEMINI_API_KEY is not configured"
       });
     }
 
-    // --------------------------------------------------
+    // ============================================
     // 1. GET NEWS FROM NEWSAPI
-    // --------------------------------------------------
+    // ============================================
 
     const from = new Date(
       Date.now() - hours * 60 * 60 * 1000
@@ -58,11 +58,15 @@ export default async function handler(req, res) {
 
     const articles = newsData.articles || [];
 
+    // ============================================
+    // 2. IF NO NEWS
+    // ============================================
+
     if (articles.length === 0) {
       return res.status(200).json({
         place,
-        center: [26.1445, 91.7362],
-        zoom: 10,
+        center: [26.7509, 94.2037],
+        zoom: 11,
         radius: "12 km",
         coverage: 0,
         sourceTypes: 0,
@@ -70,265 +74,360 @@ export default async function handler(req, res) {
       });
     }
 
-    // --------------------------------------------------
-    // 2. SEND NEWS TO OPENAI
-    // --------------------------------------------------
+    // ============================================
+    // 3. PREPARE NEWS FOR GEMINI
+    // ============================================
 
-    const simplifiedArticles = articles.map((article, index) => ({
-      id: index + 1,
-      source: article.source?.name || "Unknown source",
-      title: article.title || "",
-      description: article.description || "",
-      url: article.url || "",
-      publishedAt: article.publishedAt || ""
-    }));
+    const simplifiedArticles = articles.map(
+      (article, index) => ({
+        id: index + 1,
+        source: article.source?.name || "Unknown source",
+        title: article.title || "",
+        description: article.description || "",
+        url: article.url || "",
+        publishedAt: article.publishedAt || ""
+      })
+    );
 
-    const aiPrompt = `
-You are the incident intelligence engine for a product called Signal Atlas.
+    const prompt = `
+You are the AI incident-analysis engine for Signal Atlas.
 
-The user searched for this location:
+The user searched for:
 
 ${place}
 
-Below are recent news articles.
+Analyze the following recent news articles.
 
-Your job is to identify genuine local incidents or important developments relevant to the searched location.
+Your task:
 
-Rules:
-
-1. Group articles that describe the same event into ONE incident.
-2. Do not create an incident merely because an article mentions the location.
-3. Ignore unrelated national or international stories.
+1. Identify genuine incidents or important local developments.
+2. Ignore articles that only mention the location without reporting a local event.
+3. Group multiple articles about the SAME event into one incident.
 4. Do not invent facts.
-5. Use only information supported by the supplied articles.
-6. Categorize each incident.
-7. Give each incident a short useful title.
-8. Write a concise description.
-9. Use "urgent", "watch", or "update" for the type.
-10. Keep the original article URLs as sources.
-11. If an article does not provide enough evidence for a specific incident, do not invent one.
-12. The "point" coordinates should NOT be invented from the article. For now, use the searched location's center coordinates provided by the server.
+5. Only use information contained in the supplied articles.
+6. Give each incident a category such as:
+   Roads, Weather, Crime, Fire, Health, Transport,
+   Infrastructure, Environment, Education, Business,
+   Government, Community, Other.
+7. Give each incident a short title.
+8. Give a concise factual description.
+9. Classify the incident as:
+   urgent, watch, or update.
+10. Keep the source article IDs so Signal Atlas can display the original sources.
+11. Do NOT invent latitude or longitude.
+12. If there is insufficient evidence for an incident, do not create one.
 
-Return the incidents in the required JSON structure.
-
-SEARCHED LOCATION:
-${place}
+IMPORTANT:
+The sourceIds field must contain the numeric IDs of the
+articles that support that incident.
 
 ARTICLES:
+
 ${JSON.stringify(simplifiedArticles)}
 `;
 
-    const openaiResponse = await fetch(
-      "https://api.openai.com/v1/responses",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${openaiApiKey}`
-        },
-        body: JSON.stringify({
-          model: "gpt-5.5",
-          input: aiPrompt,
+    // ============================================
+    // 4. ASK GEMINI
+    // ============================================
 
-          text: {
-            format: {
-              type: "json_schema",
-              name: "signal_atlas_incidents",
-              strict: true,
-              schema: {
-                type: "object",
-                properties: {
-                  incidents: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        id: {
-                          type: "string"
-                        },
-                        type: {
-                          type: "string",
-                          enum: [
-                            "urgent",
-                            "watch",
-                            "update"
-                          ]
-                        },
-                        category: {
-                          type: "string"
-                        },
-                        title: {
-                          type: "string"
-                        },
-                        description: {
-                          type: "string"
-                        },
-                        location: {
-                          type: "string"
-                        },
-                        sourceIds: {
-                          type: "array",
-                          items: {
-                            type: "integer"
-                          }
-                        }
-                      },
-                      required: [
-                        "id",
-                        "type",
-                        "category",
-                        "title",
-                        "description",
-                        "location",
-                        "sourceIds"
-                      ],
-                      additionalProperties: false
-                    }
-                  }
-                },
-                required: [
-                  "incidents"
-                ],
-                additionalProperties: false
+    const geminiUrl =
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent";
+
+    const geminiResponse = await fetch(geminiUrl, {
+      method: "POST",
+
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": geminiApiKey
+      },
+
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              {
+                text: prompt
               }
-            }
+            ]
           }
-        })
-      }
-    );
+        ],
 
-    const openaiData = await openaiResponse.json();
+        generationConfig: {
+          responseMimeType: "application/json",
 
-    if (!openaiResponse.ok) {
-      console.error("OpenAI error:", openaiData);
+          responseSchema: {
+            type: "object",
+
+            properties: {
+              incidents: {
+                type: "array",
+
+                items: {
+                  type: "object",
+
+                  properties: {
+                    id: {
+                      type: "string"
+                    },
+
+                    type: {
+                      type: "string",
+
+                      enum: [
+                        "urgent",
+                        "watch",
+                        "update"
+                      ]
+                    },
+
+                    category: {
+                      type: "string"
+                    },
+
+                    title: {
+                      type: "string"
+                    },
+
+                    description: {
+                      type: "string"
+                    },
+
+                    location: {
+                      type: "string"
+                    },
+
+                    sourceIds: {
+                      type: "array",
+
+                      items: {
+                        type: "integer"
+                      }
+                    }
+                  },
+
+                  required: [
+                    "id",
+                    "type",
+                    "category",
+                    "title",
+                    "description",
+                    "location",
+                    "sourceIds"
+                  ]
+                }
+              }
+            },
+
+            required: [
+              "incidents"
+            ]
+          }
+        }
+      })
+    });
+
+    const geminiData = await geminiResponse.json();
+
+    // ============================================
+    // 5. HANDLE GEMINI ERRORS
+    // ============================================
+
+    if (!geminiResponse.ok) {
+      console.error(
+        "Gemini error:",
+        geminiData
+      );
 
       return res.status(500).json({
         error:
-          openaiData.error?.message ||
-          "OpenAI request failed"
+          geminiData.error?.message ||
+          "Gemini request failed"
       });
     }
 
-    // --------------------------------------------------
-    // 3. EXTRACT AI JSON
-    // --------------------------------------------------
+    // ============================================
+    // 6. GET GEMINI TEXT
+    // ============================================
 
-    let aiText = "";
-
-    if (openaiData.output) {
-      for (const item of openaiData.output) {
-        if (item.type === "message" && item.content) {
-          for (const content of item.content) {
-            if (content.type === "output_text") {
-              aiText += content.text;
-            }
-          }
-        }
-      }
-    }
+    const aiText =
+      geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!aiText) {
       return res.status(500).json({
-        error: "OpenAI returned no structured output"
+        error: "Gemini returned no response"
       });
     }
 
-    const aiResult = JSON.parse(aiText);
+    let aiResult;
 
-    // --------------------------------------------------
-    // 4. CONVERT AI RESULT TO SIGNAL ATLAS FORMAT
-    // --------------------------------------------------
+    try {
+      aiResult = JSON.parse(aiText);
+    } catch (error) {
+      console.error(
+        "Gemini JSON parsing error:",
+        aiText
+      );
 
-    // Temporary center for Jorhat/other locations.
-    // We will add proper geocoding in the next step.
+      return res.status(500).json({
+        error: "Gemini returned invalid JSON"
+      });
+    }
+
+    // ============================================
+    // 7. TEMPORARY MAP CENTER
+    // ============================================
+
+    // We will add proper location/geocoding later.
     const center = [26.7509, 94.2037];
 
-    const incidents = aiResult.incidents.map(
-      (incident, index) => {
+    // ============================================
+    // 8. CONVERT GEMINI RESULT
+    //    TO SIGNAL ATLAS FORMAT
+    // ============================================
 
-        const sources = incident.sourceIds
-          .map(sourceId => simplifiedArticles[sourceId - 1])
+    const incidents = (
+      aiResult.incidents || []
+    ).map((incident, index) => {
+
+      const sources =
+        (incident.sourceIds || [])
+          .map(
+            sourceId =>
+              simplifiedArticles[sourceId - 1]
+          )
           .filter(Boolean)
           .map(article => ({
             name: article.source,
             url: article.url
           }));
 
-        const publishedDates = incident.sourceIds
-          .map(sourceId => simplifiedArticles[sourceId - 1])
+      const dates =
+        (incident.sourceIds || [])
+          .map(
+            sourceId =>
+              simplifiedArticles[sourceId - 1]
+          )
           .filter(Boolean)
-          .map(article => new Date(article.publishedAt))
-          .filter(date => !isNaN(date));
-
-        let time = "Recently";
-
-        if (publishedDates.length > 0) {
-          const newest = Math.max(
-            ...publishedDates.map(date => date.getTime())
+          .map(
+            article =>
+              new Date(article.publishedAt)
+          )
+          .filter(
+            date =>
+              !Number.isNaN(date.getTime())
           );
 
-          const diffMinutes =
-            Math.max(
-              0,
-              Math.floor(
-                (Date.now() - newest) / 60000
-              )
-            );
+      let time = "Recently";
 
-          if (diffMinutes < 60) {
-            time = `${diffMinutes} min ago`;
-          } else if (diffMinutes < 1440) {
-            time =
-              `${Math.floor(diffMinutes / 60)} hrs ago`;
-          } else {
-            time =
-              `${Math.floor(diffMinutes / 1440)} days ago`;
-          }
+      if (dates.length > 0) {
+
+        const newest = Math.max(
+          ...dates.map(
+            date => date.getTime()
+          )
+        );
+
+        const diffMinutes = Math.max(
+          0,
+          Math.floor(
+            (Date.now() - newest) / 60000
+          )
+        );
+
+        if (diffMinutes < 60) {
+
+          time =
+            `${diffMinutes} min ago`;
+
+        } else if (diffMinutes < 1440) {
+
+          time =
+            `${Math.floor(
+              diffMinutes / 60
+            )} hrs ago`;
+
+        } else {
+
+          time =
+            `${Math.floor(
+              diffMinutes / 1440
+            )} days ago`;
         }
-
-        return {
-          id: incident.id || `incident-${index + 1}`,
-          type: incident.type,
-          category: incident.category,
-          time,
-          title: incident.title,
-          description: incident.description,
-          location: incident.location,
-
-          // Temporary coordinates.
-          // Proper incident geocoding comes next.
-          point: center,
-
-          sources
-        };
       }
-    );
 
-    // --------------------------------------------------
-    // 5. RETURN DATA TO SIGNAL ATLAS
-    // --------------------------------------------------
+      return {
+
+        id:
+          incident.id ||
+          `incident-${index + 1}`,
+
+        type:
+          incident.type,
+
+        category:
+          incident.category,
+
+        time,
+
+        title:
+          incident.title,
+
+        description:
+          incident.description,
+
+        location:
+          incident.location,
+
+        // Temporary coordinates.
+        point:
+          center,
+
+        sources
+      };
+    });
+
+    // ============================================
+    // 9. RETURN SIGNAL ATLAS DATA
+    // ============================================
+
+    const uniqueSources =
+      new Set(
+        articles.map(
+          article =>
+            article.source?.name
+        )
+      );
 
     return res.status(200).json({
+
       place,
+
       center,
+
       zoom: 11,
+
       radius: "12 km",
-      coverage: Math.min(
-        100,
-        Math.round(
-          (articles.length / 20) * 100
-        )
-      ),
-      sourceTypes: new Set(
-        articles.map(
-          article => article.source?.name
-        )
-      ).size,
+
+      coverage:
+        Math.min(
+          100,
+          Math.round(
+            (articles.length / 20) * 100
+          )
+        ),
+
+      sourceTypes:
+        uniqueSources.size,
+
       incidents
     });
 
   } catch (error) {
-    console.error("Server error:", error);
+
+    console.error(
+      "Server error:",
+      error
+    );
 
     return res.status(500).json({
       error: "Server error"
