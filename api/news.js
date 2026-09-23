@@ -1,14 +1,5 @@
 export default async function handler(req, res) {
   try {
-    const place = req.query.place;
-    const hours = Number(req.query.hours) || 72;
-
-    if (!place) {
-      return res.status(400).json({
-        error: "Missing place"
-      });
-    }
-
     const newsApiKey = process.env.GNEWS_API_KEY;
     const geminiApiKey = process.env.GEMINI_API_KEY;
 
@@ -24,27 +15,83 @@ export default async function handler(req, res) {
       });
     }
 
-    // ============================================
-    // 1. GET NEWS FROM NEWSAPI
-    // ============================================
+    const place = String(req.query.place || "").trim();
+    const hours = Math.min(
+      Math.max(Number(req.query.hours || 72), 1),
+      168
+    );
 
-    const from = new Date(
+    if (!place) {
+      return res.status(400).json({
+        error: "Missing place parameter"
+      });
+    }
+
+    // ---------------------------------------------------------
+    // 1. GEOCODE THE SEARCHED LOCATION
+    // ---------------------------------------------------------
+
+    const geocodeUrl =
+      "https://nominatim.openstreetmap.org/search?" +
+      new URLSearchParams({
+        q: place,
+        format: "jsonv2",
+        limit: "1",
+        addressdetails: "1"
+      }).toString();
+
+    const geocodeResponse = await fetch(geocodeUrl, {
+      headers: {
+        "User-Agent": "SignalAtlas/1.0 (location-awareness prototype)"
+      }
+    });
+
+    if (!geocodeResponse.ok) {
+      throw new Error(
+        `Location service returned ${geocodeResponse.status}`
+      );
+    }
+
+    const geocodeData = await geocodeResponse.json();
+
+    if (!Array.isArray(geocodeData) || geocodeData.length === 0) {
+      return res.status(404).json({
+        error: `Could not find the location "${place}".`
+      });
+    }
+
+    const searchedLocation = geocodeData[0];
+
+    const center = [
+      Number(searchedLocation.lat),
+      Number(searchedLocation.lon)
+    ];
+
+    const displayPlace =
+      searchedLocation.display_name || place;
+
+    // ---------------------------------------------------------
+    // 2. GET RECENT NEWS FROM NEWSAPI
+    // ---------------------------------------------------------
+
+    const fromDate = new Date(
       Date.now() - hours * 60 * 60 * 1000
     ).toISOString();
 
-    const newsUrl = new URL(
-      "https://newsapi.org/v2/everything"
-    );
-
-    newsUrl.searchParams.set("q", place);
-    newsUrl.searchParams.set("from", from);
-    newsUrl.searchParams.set("sortBy", "publishedAt");
-    newsUrl.searchParams.set("language", "en");
-    newsUrl.searchParams.set("pageSize", "20");
+    const newsUrl =
+      "https://newsapi.org/v2/everything?" +
+      new URLSearchParams({
+        q: place,
+        from: fromDate,
+        sortBy: "publishedAt",
+        language: "en",
+        pageSize: "20"
+      }).toString();
 
     const newsResponse = await fetch(newsUrl, {
       headers: {
-        "X-Api-Key": newsApiKey
+        "X-Api-Key": newsApiKey,
+        "Accept": "application/json"
       }
     });
 
@@ -52,21 +99,37 @@ export default async function handler(req, res) {
 
     if (!newsResponse.ok) {
       return res.status(newsResponse.status).json({
-        error: newsData.message || "NewsAPI request failed"
+        error:
+          newsData?.message ||
+          "NewsAPI request failed"
       });
     }
 
-    const articles = newsData.articles || [];
+    const articles = Array.isArray(newsData.articles)
+      ? newsData.articles
+      : [];
 
-    // ============================================
-    // 2. IF NO NEWS
-    // ============================================
+    // Remove articles without useful information.
+    const cleanedArticles = articles
+      .filter((article) => article.title && article.url)
+      .map((article, index) => ({
+        id: `article-${index + 1}`,
+        source: article.source?.name || "Unknown source",
+        title: article.title,
+        description: article.description || "",
+        url: article.url,
+        publishedAt: article.publishedAt
+      }));
 
-    if (articles.length === 0) {
+    // ---------------------------------------------------------
+    // 3. IF THERE IS NO NEWS
+    // ---------------------------------------------------------
+
+    if (cleanedArticles.length === 0) {
       return res.status(200).json({
-        place,
-        center: [26.7509, 94.2037],
-        zoom: 11,
+        place: displayPlace,
+        center,
+        zoom: 12,
         radius: "12 km",
         coverage: 0,
         sourceTypes: 0,
@@ -74,73 +137,85 @@ export default async function handler(req, res) {
       });
     }
 
-    // ============================================
-    // 3. PREPARE NEWS FOR GEMINI
-    // ============================================
+    // ---------------------------------------------------------
+    // 4. ASK GEMINI TO ANALYZE THE NEWS
+    // ---------------------------------------------------------
 
-    const simplifiedArticles = articles.map(
-      (article, index) => ({
-        id: index + 1,
-        source: article.source?.name || "Unknown source",
-        title: article.title || "",
-        description: article.description || "",
-        url: article.url || "",
-        publishedAt: article.publishedAt || ""
-      })
-    );
+    const model =
+      "gemini-3.5-flash-lite";
+
+    const geminiUrl =
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(geminiApiKey)}`;
 
     const prompt = `
-You are the AI incident-analysis engine for Signal Atlas.
+You are the intelligence layer for a location-awareness product called Signal Atlas.
 
 The user searched for:
 
-${place}
+"${place}"
 
-Analyze the following recent news articles.
+The searched location coordinates are:
 
-Your task:
+latitude: ${center[0]}
+longitude: ${center[1]}
 
-1. Identify genuine incidents or important local developments.
-2. Ignore articles that only mention the location without reporting a local event.
-3. Group multiple articles about the SAME event into one incident.
-4. Do not invent facts.
-5. Only use information contained in the supplied articles.
-6. Give each incident a category such as:
-   Roads, Weather, Crime, Fire, Health, Transport,
-   Infrastructure, Environment, Education, Business,
-   Government, Community, Other.
-7. Give each incident a short title.
-8. Give a concise factual description.
-9. Classify the incident as:
-   urgent, watch, or update.
-10. Keep the source article IDs so Signal Atlas can display the original sources.
-11. Do NOT invent latitude or longitude.
-12. If there is insufficient evidence for an incident, do not create one.
+Below are recent news articles retrieved from NewsAPI.
 
-IMPORTANT:
-The sourceIds field must contain the numeric IDs of the
-articles that support that incident.
+Your task is to identify genuine and useful LOCAL NEWS SIGNALS related to the searched location.
 
-ARTICLES:
+IMPORTANT RULES:
 
-${JSON.stringify(simplifiedArticles)}
+1. Do NOT invent facts.
+2. Do NOT invent locations.
+3. Do NOT invent dates.
+4. Do NOT invent sources.
+5. Ignore articles where the searched place is only mentioned incidentally.
+6. Prefer stories that actually happened in, affect, concern, or directly involve the searched location.
+7. Local news does NOT have to be an emergency.
+8. Include useful categories such as:
+   - Public Safety
+   - Accident
+   - Crime
+   - Fire
+   - Weather
+   - Flood
+   - Roads
+   - Traffic
+   - Transit
+   - Health
+   - Education
+   - Environment
+   - Civic
+   - Government
+   - Community
+   - Business
+   - Other
+9. A normal local news story can be a signal even if it is not an emergency.
+10. Do not reject an article merely because it is a feature, environmental story, community story, government update, or development story.
+11. Group multiple articles that clearly describe the SAME real-world event into one signal.
+12. Keep all relevant original sources in the sourceIds array.
+13. If only one article describes a genuine local story, it may still become one signal.
+14. If an article is clearly unrelated to the searched location, exclude it.
+15. Do not manufacture coordinates.
+16. location should contain a human-readable location if the article provides one.
+17. If the article does not provide a more specific location, use the searched place.
+18. Use:
+   - "urgent" for immediate or potentially dangerous situations
+   - "watch" for developing, significant, or noteworthy situations
+   - "update" for ordinary local information
+19. Return only useful signals. Do not force an article into a signal if it is genuinely irrelevant.
+20. Preserve the article source IDs exactly.
+
+NEWS ARTICLES:
+
+${JSON.stringify(cleanedArticles, null, 2)}
 `;
-
-    // ============================================
-    // 4. ASK GEMINI
-    // ============================================
-
-    const geminiUrl =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent";
 
     const geminiResponse = await fetch(geminiUrl, {
       method: "POST",
-
       headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": geminiApiKey
+        "Content-Type": "application/json"
       },
-
       body: JSON.stringify({
         contents: [
           {
@@ -151,73 +226,55 @@ ${JSON.stringify(simplifiedArticles)}
             ]
           }
         ],
-
         generationConfig: {
+          temperature: 0.1,
           responseMimeType: "application/json",
-
           responseSchema: {
-            type: "object",
-
+            type: "OBJECT",
             properties: {
               incidents: {
-                type: "array",
-
+                type: "ARRAY",
                 items: {
-                  type: "object",
-
+                  type: "OBJECT",
                   properties: {
-                    id: {
-                      type: "string"
+                    title: {
+                      type: "STRING"
                     },
-
+                    description: {
+                      type: "STRING"
+                    },
+                    category: {
+                      type: "STRING"
+                    },
                     type: {
-                      type: "string",
-
+                      type: "STRING",
                       enum: [
                         "urgent",
                         "watch",
                         "update"
                       ]
                     },
-
-                    category: {
-                      type: "string"
-                    },
-
-                    title: {
-                      type: "string"
-                    },
-
-                    description: {
-                      type: "string"
-                    },
-
                     location: {
-                      type: "string"
+                      type: "STRING"
                     },
-
                     sourceIds: {
-                      type: "array",
-
+                      type: "ARRAY",
                       items: {
-                        type: "integer"
+                        type: "STRING"
                       }
                     }
                   },
-
                   required: [
-                    "id",
-                    "type",
-                    "category",
                     "title",
                     "description",
+                    "category",
+                    "type",
                     "location",
                     "sourceIds"
                   ]
                 }
               }
             },
-
             required: [
               "incidents"
             ]
@@ -228,209 +285,268 @@ ${JSON.stringify(simplifiedArticles)}
 
     const geminiData = await geminiResponse.json();
 
-    // ============================================
-    // 5. HANDLE GEMINI ERRORS
-    // ============================================
-
     if (!geminiResponse.ok) {
-      console.error(
-        "Gemini error:",
-        geminiData
-      );
-
-      return res.status(500).json({
+      return res.status(geminiResponse.status).json({
         error:
-          geminiData.error?.message ||
+          geminiData?.error?.message ||
           "Gemini request failed"
       });
     }
 
-    // ============================================
-    // 6. GET GEMINI TEXT
-    // ============================================
+    // ---------------------------------------------------------
+    // 5. EXTRACT GEMINI JSON
+    // ---------------------------------------------------------
 
-    const aiText =
-      geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
+    const generatedText =
+      geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
 
-    if (!aiText) {
-      return res.status(500).json({
-        error: "Gemini returned no response"
-      });
+    if (!generatedText) {
+      throw new Error(
+        "Gemini returned an empty response."
+      );
     }
 
     let aiResult;
 
     try {
-      aiResult = JSON.parse(aiText);
+      aiResult = JSON.parse(generatedText);
     } catch (error) {
       console.error(
-        "Gemini JSON parsing error:",
-        aiText
+        "Gemini JSON parsing failed:",
+        generatedText
       );
 
-      return res.status(500).json({
-        error: "Gemini returned invalid JSON"
-      });
+      throw new Error(
+        "Gemini returned invalid JSON."
+      );
     }
 
-    // ============================================
-    // 7. TEMPORARY MAP CENTER
-    // ============================================
+    const aiIncidents = Array.isArray(aiResult?.incidents)
+      ? aiResult.incidents
+      : [];
 
-    // We will add proper location/geocoding later.
-    const center = [26.7509, 94.2037];
+    // ---------------------------------------------------------
+    // 6. CONVERT AI RESULTS INTO SIGNAL ATLAS FORMAT
+    // ---------------------------------------------------------
 
-    // ============================================
-    // 8. CONVERT GEMINI RESULT
-    //    TO SIGNAL ATLAS FORMAT
-    // ============================================
+    const incidents = [];
 
-    const incidents = (
-      aiResult.incidents || []
-    ).map((incident, index) => {
+    for (let i = 0; i < aiIncidents.length; i++) {
+      const item = aiIncidents[i];
 
-      const sources =
-        (incident.sourceIds || [])
-          .map(
-            sourceId =>
-              simplifiedArticles[sourceId - 1]
+      if (
+        !item ||
+        !item.title ||
+        !Array.isArray(item.sourceIds)
+      ) {
+        continue;
+      }
+
+      const matchingArticles =
+        item.sourceIds
+          .map((sourceId) =>
+            cleanedArticles.find(
+              (article) => article.id === sourceId
+            )
           )
-          .filter(Boolean)
-          .map(article => ({
-            name: article.source,
-            url: article.url
-          }));
+          .filter(Boolean);
 
-      const dates =
-        (incident.sourceIds || [])
-          .map(
-            sourceId =>
-              simplifiedArticles[sourceId - 1]
-          )
-          .filter(Boolean)
-          .map(
-            article =>
-              new Date(article.publishedAt)
-          )
-          .filter(
-            date =>
-              !Number.isNaN(date.getTime())
+      if (matchingArticles.length === 0) {
+        continue;
+      }
+
+      const primaryArticle =
+        matchingArticles[0];
+
+      // -------------------------------------------------------
+      // Try to geocode the specific location mentioned by AI.
+      // If it fails, safely fall back to the searched location.
+      // -------------------------------------------------------
+
+      let point = center;
+      let locationText =
+        item.location || place;
+
+      if (
+        item.location &&
+        item.location.toLowerCase() !==
+          place.toLowerCase()
+      ) {
+        try {
+          const incidentGeocodeUrl =
+            "https://nominatim.openstreetmap.org/search?" +
+            new URLSearchParams({
+              q: `${item.location}, ${place}`,
+              format: "jsonv2",
+              limit: "1"
+            }).toString();
+
+          const incidentGeocodeResponse =
+            await fetch(incidentGeocodeUrl, {
+              headers: {
+                "User-Agent":
+                  "SignalAtlas/1.0 (location-awareness prototype)"
+              }
+            });
+
+          if (incidentGeocodeResponse.ok) {
+            const incidentLocations =
+              await incidentGeocodeResponse.json();
+
+            if (
+              Array.isArray(incidentLocations) &&
+              incidentLocations.length > 0
+            ) {
+              const candidate =
+                incidentLocations[0];
+
+              const lat = Number(candidate.lat);
+              const lon = Number(candidate.lon);
+
+              if (
+                Number.isFinite(lat) &&
+                Number.isFinite(lon)
+              ) {
+                point = [lat, lon];
+              }
+            }
+          }
+        } catch (error) {
+          console.warn(
+            "Specific incident geocoding failed:",
+            error.message
           );
-
-      let time = "Recently";
-
-      if (dates.length > 0) {
-
-        const newest = Math.max(
-          ...dates.map(
-            date => date.getTime()
-          )
-        );
-
-        const diffMinutes = Math.max(
-          0,
-          Math.floor(
-            (Date.now() - newest) / 60000
-          )
-        );
-
-        if (diffMinutes < 60) {
-
-          time =
-            `${diffMinutes} min ago`;
-
-        } else if (diffMinutes < 1440) {
-
-          time =
-            `${Math.floor(
-              diffMinutes / 60
-            )} hrs ago`;
-
-        } else {
-
-          time =
-            `${Math.floor(
-              diffMinutes / 1440
-            )} days ago`;
         }
       }
 
-      return {
+      // -------------------------------------------------------
+      // Human-readable time
+      // -------------------------------------------------------
 
-        id:
-          incident.id ||
-          `incident-${index + 1}`,
+      const publishedDate =
+        new Date(primaryArticle.publishedAt);
 
+      const minutesAgo = Math.max(
+        0,
+        Math.round(
+          (Date.now() - publishedDate.getTime()) /
+            60000
+        )
+      );
+
+      let time;
+
+      if (minutesAgo < 60) {
+        time =
+          minutesAgo <= 1
+            ? "1 min ago"
+            : `${minutesAgo} min ago`;
+      } else {
+        const hoursAgo =
+          Math.round(minutesAgo / 60);
+
+        time =
+          hoursAgo <= 1
+            ? "1 hr ago"
+            : `${hoursAgo} hrs ago`;
+      }
+
+      // -------------------------------------------------------
+      // Sources
+      // -------------------------------------------------------
+
+      const sources =
+        matchingArticles.map((article) => ({
+          name: article.source,
+          url: article.url
+        }));
+
+      incidents.push({
+        id: `signal-${i + 1}`,
         type:
-          incident.type,
+          ["urgent", "watch", "update"].includes(
+            item.type
+          )
+            ? item.type
+            : "update",
 
         category:
-          incident.category,
+          item.category || "Other",
 
         time,
 
         title:
-          incident.title,
+          item.title,
 
         description:
-          incident.description,
+          item.description ||
+          primaryArticle.description ||
+          "",
 
         location:
-          incident.location,
+          locationText,
 
-        // Temporary coordinates.
-        point:
-          center,
+        point,
 
         sources
-      };
-    });
+      });
+    }
 
-    // ============================================
-    // 9. RETURN SIGNAL ATLAS DATA
-    // ============================================
+    // ---------------------------------------------------------
+    // 7. SOURCE DIVERSITY
+    // ---------------------------------------------------------
 
     const uniqueSources =
       new Set(
-        articles.map(
-          article =>
-            article.source?.name
+        cleanedArticles.map(
+          (article) => article.source
         )
       );
 
-    return res.status(200).json({
+    const sourceTypes =
+      uniqueSources.size;
 
-      place,
+    // Coverage is a simple source-diversity indicator.
+    // It is NOT a claim that every news source has been searched.
+    const coverage =
+      Math.min(
+        100,
+        sourceTypes * 20
+      );
+
+    // ---------------------------------------------------------
+    // 8. FINAL SIGNAL ATLAS RESPONSE
+    // ---------------------------------------------------------
+
+    return res.status(200).json({
+      place: displayPlace,
 
       center,
 
-      zoom: 11,
+      zoom:
+        incidents.length > 0
+          ? 12
+          : 11,
 
       radius: "12 km",
 
-      coverage:
-        Math.min(
-          100,
-          Math.round(
-            (articles.length / 20) * 100
-          )
-        ),
+      coverage,
 
-      sourceTypes:
-        uniqueSources.size,
+      sourceTypes,
 
       incidents
     });
 
   } catch (error) {
-
     console.error(
-      "Server error:",
+      "Signal Atlas API error:",
       error
     );
 
     return res.status(500).json({
-      error: "Server error"
+      error:
+        error?.message ||
+        "Unexpected server error"
     });
   }
 }
